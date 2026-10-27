@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-primary: #08090D;
+    --bg-secondary: #101219;
+    --bg-card: #171A23;
+    --accent-red: #E5093F;
+    --accent-secondary: #FF3D61;
+    --text-primary: #F5F5F7;
+    --text-secondary: #A1A5B3;
+    --border-color: #292D38;
+  }
+
+  body {
+    background-color: #08090D;
+    color: #F5F5F7;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    overflow-x: hidden;
+    margin: 0;
+    padding: 0;
+  }
+
+  h1, h2, h3, h4, .font-heading {
+    font-family: 'Space Grotesk', 'Outfit', sans-serif;
+    letter-spacing: -0.02em;
+  }
+}
+
+/* Custom cinematic screen glow and scrollbars */
+.cinema-screen-glow {
+  background: linear-gradient(180deg, rgba(229, 9, 63, 0.4) 0%, rgba(229, 9, 63, 0.05) 50%, transparent 100%);
+  filter: drop-shadow(0 0 25px rgba(229, 9, 63, 0.35));
+}
+
+.cinema-screen-curve {
+  border-radius: 50% 50% 0 0 / 20px 20px 0 0;
+  box-shadow: 0 -4px 20px rgba(229, 9, 63, 0.5);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #08090D;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #292D38;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #E5093F;
+}
+
+/* Print Styles for Digital Admission Passes */
+@media print {
+  nav, footer, .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .print-ticket-area {
+    box-shadow: none !important;
+    border: 2px solid #000000 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    page-break-inside: avoid;
+    margin: 0 auto !important;
+  }
+}
+
+

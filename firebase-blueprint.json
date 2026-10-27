@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "Cinema": {
+      "title": "Cinema",
+      "description": "Cinema theatre venue with screens and location details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "location": { "type": "string", "maxLength": 300 },
+        "city": { "type": "string", "maxLength": 100 },
+        "rating": { "type": "number" },
+        "screensCount": { "type": "number" },
+        "amenities": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "city"]
+    },
+    "Show": {
+      "title": "Show",
+      "description": "A specific movie showtime at a cinema screen with seat pricing and bookings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "movieImdbId": { "type": "string", "maxLength": 32 },
+        "movieTitle": { "type": "string", "maxLength": 200 },
+        "moviePoster": { "type": "string", "maxLength": 500 },
+        "cinemaId": { "type": "string", "maxLength": 128 },
+        "cinemaName": { "type": "string", "maxLength": 200 },
+        "screenName": { "type": "string", "maxLength": 100 },
+        "date": { "type": "string", "maxLength": 20 },
+        "time": { "type": "string", "maxLength": 20 },
+        "format": { "type": "string", "maxLength": 50 },
+        "language": { "type": "string", "maxLength": 50 },
+        "bookedSeats": { "type": "array" },
+        "pricing": { "type": "object" },
+        "totalSeats": { "type": "number" },
+        "availableSeatsCount": { "type": "number" }
+      },
+      "required": ["id", "movieImdbId", "cinemaId", "date", "time"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Movie ticket booking record belonging to a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "bookingReference": { "type": "string", "maxLength": 50 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 200 },
+        "userName": { "type": "string", "maxLength": 200 },
+        "showId": { "type": "string", "maxLength": 128 },
+        "movieImdbId": { "type": "string", "maxLength": 32 },
+        "movieTitle": { "type": "string", "maxLength": 200 },
+        "moviePoster": { "type": "string", "maxLength": 500 },
+        "cinemaName": { "type": "string", "maxLength": 200 },
+        "screenName": { "type": "string", "maxLength": 100 },
+        "showDate": { "type": "string", "maxLength": 20 },
+        "showTime": { "type": "string", "maxLength": 20 },
+        "seats": { "type": "array" },
+        "ticketSubtotal": { "type": "number" },
+        "convenienceFee": { "type": "number" },
+        "taxes": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["confirmed", "cancelled"] },
+        "paymentStatus": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "bookingReference", "userId", "showId", "seats", "totalAmount", "status"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "displayName": { "type": "string", "maxLength": 200 },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Admin authorization marker document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email"]
+    }
+  },
+  "firestore": {
+    "/cinemas/{cinemaId}": {
+      "schema": "Cinema",
+      "description": "Cinema venues and facilities"
+    },
+    "/shows/{showId}": {
+      "schema": "Show",
+      "description": "Scheduled showtimes and seat reservations"
+    },
+    "/bookings/{bookingId}": {
+      "schema": "Booking",
+      "description": "Customer movie ticket bookings"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile records"
+    },
+    "/admins/{adminId}": {
+      "schema": "Admin",
+      "description": "Designated administrator identifiers"
+    }
+  }
+}

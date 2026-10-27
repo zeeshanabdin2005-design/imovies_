@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedBootstrapAdmin() {
+      return signedIn()
+        && request.auth.token.email == 'zeeshanabdin2005@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return signedIn() && (
+        isVerifiedBootstrapAdmin()
+        || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidId(id) {
+      return id is string
+        && id.size() > 0
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    match /cinemas/{cinemaId} {
+      allow read: if true;
+      allow create, update, delete: if isValidId(cinemaId) && isAdmin();
+    }
+
+    match /shows/{showId} {
+      allow read: if true;
+      allow create, delete: if isValidId(showId) && isAdmin();
+      // Current prototype performs seat updates from the authenticated client.
+      // Only seat-inventory fields may change. For production, move reservations
+      // into a trusted Cloud Function to validate prices and atomic seat ownership.
+      allow update: if isValidId(showId) && signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['bookedSeats', 'availableSeatsCount'])
+        && request.resource.data.bookedSeats is list
+        && request.resource.data.availableSeatsCount is int
+        && request.resource.data.availableSeatsCount >= 0
+        && request.resource.data.availableSeatsCount <= resource.data.totalSeats;
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && signedIn()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if signedIn()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(bookingId) && signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'id', 'bookingReference', 'userId', 'userEmail', 'userName', 'userPhone',
+          'showId', 'movieImdbId', 'movieTitle', 'moviePoster', 'cinemaId',
+          'cinemaName', 'screenName', 'showDate', 'showTime', 'format', 'seats',
+          'seatCategories', 'ticketSubtotal', 'discountAmount', 'convenienceFee',
+          'taxes', 'totalAmount', 'status', 'paymentStatus', 'paymentMethod',
+          'couponCode', 'idempotencyKey', 'createdAt'
+        ])
+        && request.resource.data.seats is list
+        && request.resource.data.seats.size() >= 1
+        && request.resource.data.seats.size() <= 8
+        && request.resource.data.status == 'confirmed'
+        && request.resource.data.paymentStatus == 'demo_verified'
+        && request.resource.data.totalAmount is number
+        && request.resource.data.totalAmount >= 0;
+      allow update: if signedIn() && (
+        (isAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'cancelledAt'])
+          && request.resource.data.status == 'cancelled'
+          && resource.data.status == 'confirmed')
+        ||
+        (resource.data.userId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'cancelledAt'])
+          && request.resource.data.status == 'cancelled'
+          && resource.data.status == 'confirmed')
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && signedIn()
+        && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.id == userId
+        && request.resource.data.role == 'user'
+        && request.resource.data.keys().hasOnly(['id', 'email', 'displayName', 'role', 'createdAt']);
+      allow update: if isValidId(userId) && signedIn() && (
+        (request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['displayName', 'photoURL', 'phoneNumber']))
+        || isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow get: if signedIn() && (request.auth.uid == adminId || isAdmin());
+      allow list: if isAdmin();
+      // Admin membership must be provisioned through a trusted console/Admin SDK,
+      // never by a browser client.
+      allow create, update, delete: if false;
+    }
+
+    match /test/{docId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

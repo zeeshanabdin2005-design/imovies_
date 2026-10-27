@@ -1,0 +1,6 @@
+{
+  "name": "IMovies",
+  "description": "IMovies - Premium Movie Ticket Booking Platform with real-time cinema schedules, interactive seat reservation, and OMDb movie discovery.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
