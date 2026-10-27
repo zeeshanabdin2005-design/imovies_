@@ -126,7 +126,7 @@ export const SeatSelectionPage: React.FC = () => {
         return prev.filter((s) => s !== seatId);
       }
       if (prev.length >= 8) {
-        alert('You can reserve up to 8 tickets per booking.');
+        setCollisionAlert('You can reserve a maximum of 8 tickets per reservation.');
         return prev;
       }
       return [...prev, seatId];

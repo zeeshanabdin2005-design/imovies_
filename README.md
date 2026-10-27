@@ -2,79 +2,93 @@
 
 **Tagline:** "Your Next Movie Experience Starts Here."
 
-**IMovies** is a responsive, cinematic movie-ticket-booking web application built with React 19, TypeScript, Vite, Tailwind CSS, Express, and the OMDb API.
+**IMovies** is a responsive, cinematic movie-ticket-booking full-stack web application built with React 19, TypeScript, Vite, Tailwind CSS, Express, Cloud Firestore, Firebase Authentication, and the OMDb API.
 
 ---
 
-## 🏛️ Phase 2: OMDb Integration Architecture
+## 🏛️ Application Architecture
 
-The application enforces a secure server-side proxy architecture:
+The application enforces a secure full-stack server-authoritative architecture:
 
 ```
-[React Frontend]  ──(Internal API: /api/*)──>  [Express Backend]  ──(Private OMDB_API_KEY)──>  [OMDb API]
+[React 19 Frontend (SPA)]
+   │
+   ├─► [Express Backend (/api/*)]
+   │      ├─► Auth Middleware (Token verification, RBAC, Admin check)
+   │      ├─► Cinema & Showtime Service (Seat validation, pricing, coupons)
+   │      ├─► Durable JSON Store (data/database.json - persistence across restarts)
+   │      ├─► Concurrency Control (Show mutex locks, conflict prevention)
+   │      └─► OMDb API Proxy (Rate-limiting, caching, private key isolation)
+   │
+   └─► [Firebase / Cloud Firestore (ai-studio-a4954843-5377-43c6-b522-bb0dcc785a17)]
+          ├─► Firebase Auth (Google Sign-In, Email/Password, Sessions)
+          ├─► Firestore Security Rules (ABAC Zero-Trust rules, role protection)
+          └─► Synchronized Bookings Collection
 ```
 
 ### Key Security & Reliability Measures
-1. **Zero Client Leakage:** The `OMDB_API_KEY` is kept strictly on the server and is never transmitted to the browser or prefixed with `VITE_`.
-2. **In-Memory Caching:** Search queries are cached for 10 minutes and movie details are cached for 1 hour to prevent redundant requests and conserve OMDb rate limits.
-3. **Sliding-Window Rate Limiting:** Built-in rate limiting throttles excessive requests to protect upstream quotas.
-4. **Resilient Curated Fallback:** If OMDb experiences transient errors, quota exhaustion, or an unconfigured API key, the platform seamlessly returns a verified demonstration catalog with clear `source: "demo"` status indicators.
+1. **Server-Authoritative Pricing & Seat Integrity:** All seat prices, discounts, GST (18%), convenience fees (₹35/ticket), and promotional coupons are calculated strictly on the backend. Client-submitted prices are never trusted.
+2. **Double-Booking & Race Condition Prevention:** Simultaneous reservation requests for the same showtime are serialized via backend concurrency locks, returning HTTP 409 Conflict if seats were claimed.
+3. **Durable Persistence Across Server Restarts:** All bookings, seat reservations, and showtimes are persisted to `data/database.json`. Server restarts or crashes never lose confirmed reservations.
+4. **Idempotency Protection:** Repeated payment or checkout requests with the same idempotency key return the existing confirmed booking without charging or reserving duplicate tickets.
+5. **Zero Client Key Leakage:** `OMDB_API_KEY` is kept strictly server-side and is never exposed in browser bundles.
+6. **Backend-Enforced Admin Authorization:** `/api/admin/*` endpoints strictly require verified administrator credentials (`zeeshanabdin2005@gmail.com` or `riz190175@gmail.com`).
 
 ---
 
-## ⚙️ Prerequisites & Environment Setup
+## ⚙️ Environment Variables & Setup
 
-- **Node.js:** v18.0.0 or higher
-- **npm:** v9.0.0 or higher
-
-### 1. Obtain an OMDb API Key
-1. Visit [OMDb API Key Generator](https://www.omdbapi.com/apikey.aspx).
-2. Select the free tier (1,000 daily requests) or a patron tier.
-3. Verify your email to activate the key.
-
-### 2. Configure Backend Environment
 Create a `.env` file in the project root based on `.env.example`:
 
 ```env
 # OMDb API Key (Server-side only)
 OMDB_API_KEY=your_omdb_api_key_here
 
-# Server Port
+# Server Port (Default: 3000)
 PORT=3000
 
-# Client Origin (CORS)
+# Client Origin for CORS
 CLIENT_ORIGIN=http://localhost:3000
+
+# Firebase Project Configuration (Loaded automatically from firebase-applet-config.json)
+FIREBASE_PROJECT_ID=dauntless-champion-4xjsq
 ```
 
-*Note: If `OMDB_API_KEY` is not set or omitted, IMovies uses the curated demonstration catalog. Configure your own key privately to enable live OMDb requests.*
+*Note: If `OMDB_API_KEY` is not provided, IMovies uses the curated demonstration catalog with full showtimes, seat maps, and checkout simulation.*
 
 ---
 
 ## 🚀 Running the Application
 
-### Install Dependencies
+### 1. Install Dependencies
 ```bash
 npm install
 ```
 
-### Development Mode
-Runs Vite with the Express API server middleware mounted seamlessly on port 3000:
+### 2. Development Mode
+Runs Vite with the Express API server middleware on port 3000:
 ```bash
 npm run dev
 ```
 
-### Production Build & Full-Stack Run
+### 3. Production Build & Full-Stack Run
 ```bash
-# Build frontend assets
+# Build frontend SPA
 npm run build
 
-# Start production Express server
+# Start production server
 npm start
 ```
 
-### Type Checking & Linting
+### 4. Type Checking & Code Quality
 ```bash
 npm run lint
+```
+
+### 5. Automated Verification Test Suite
+Runs the built-in Node.js test suite verifying pricing, coupons, concurrency, idempotency, failure simulation, cancellation, and admin authorization:
+```bash
+npm test
 ```
 
 ---
@@ -82,75 +96,37 @@ npm run lint
 ## 🧪 Testing Backend Endpoints
 
 ### 1. Test Health Endpoint
-Check if the Express API proxy is running:
 ```bash
 curl http://localhost:3000/api/health
 ```
-**Expected Response:**
-```json
-{
-  "status": "ok",
-  "service": "IMovies API Server",
-  "timestamp": "2026-10-27T...",
-  "omdbConfigured": true,
-  "version": "2.0.0"
-}
-```
 
 ### 2. Test Movie Search
-Search movies by title query:
 ```bash
 curl "http://localhost:3000/api/movies/search?q=interstellar&page=1"
 ```
-**Expected Response:**
-```json
-{
-  "Search": [
-    {
-      "imdbID": "tt0816692",
-      "title": "Interstellar",
-      "year": "2014",
-      "type": "movie",
-      "poster": "https://...",
-      "source": "omdb"
-    }
-  ],
-  "totalResults": "1",
-  "Response": "True",
-  "source": "omdb"
-}
+
+### 3. Test Showtimes
+```bash
+curl "http://localhost:3000/api/shows"
 ```
 
-### 3. Test Movie Details by IMDb ID
-Retrieve full movie details:
+### 4. Test Server-Authoritative Price Calculation
 ```bash
-curl "http://localhost:3000/api/movies/tt0816692"
+curl -X POST http://localhost:3000/api/bookings/calculate-price \
+  -H "Content-Type: application/json" \
+  -d '{"seats":["A1","F1","J1"],"couponCode":"IMOVIES50"}'
 ```
 
-### 4. Test Curated Catalog
+### 5. Test Admin Overview (Requires Admin Authorization)
 ```bash
-curl "http://localhost:3000/api/curated"
+curl http://localhost:3000/api/admin/overview \
+  -H "Authorization: Bearer <ID_TOKEN>"
 ```
 
 ---
 
-## 🛠️ Common Troubleshooting
+## 🎟️ Available Demo Promotional Coupons
 
-| Issue | Cause | Solution |
-| :--- | :--- | :--- |
-| `Too many search requests` | Rate limiter triggered | Wait 60 seconds before initiating subsequent search bursts. |
-| `Demonstration Mode` indicator displayed | OMDb key is invalid or rate limited | Check `OMDB_API_KEY` in `.env` and verify email activation on omdbapi.com. |
-| `Movie with identifier not found` | Invalid or malformed IMDb ID | Ensure IDs follow the `tt1234567` format. |
-| Missing movie poster | OMDb returned `"N/A"` for poster | Handled automatically by the built-in graceful poster fallback. |
-
-
-## Phase 5 security and authentication notes
-
-- Email/password registration and login now use Firebase Authentication rather than simulated success messages.
-- Google sign-in and guest sign-in use Firebase Authentication providers. Anonymous sign-in must be enabled in the Firebase Authentication console for guest access.
-- Public registration always creates a `user` profile. The browser cannot grant itself administrator privileges.
-- The `/admin` route requires an authenticated user and a trusted administrator determination. The bootstrap administrator account must use the allowlisted email and have a verified email address, or have an administrator document provisioned through a trusted Firebase Console/Admin SDK workflow.
-- The `firestore.rules` file has been tightened. Deploy these rules to the Firebase project before evaluating security. The client cannot create or modify `/admins` records.
-- The real `OMDB_API_KEY` value has been removed from `.env.example`. If a previously shared key was active, rotate it with OMDb and keep the replacement only in a private environment variable.
-- This remains a prototype. The separate Express `/api/bookings/*` endpoints currently use in-memory booking storage and do not yet verify Firebase ID tokens. Do not deploy those endpoints as a production booking service until server-side token verification, durable database transactions, and ownership checks are added. Firestore client-side seat inventory updates also require migration to a trusted Cloud Function/server endpoint before production use.
-- The current environment did not permit a complete dependency installation during this review, so build/lint verification must be rerun in a network-enabled development environment.
+- `IMOVIES50`: 50% discount on ticket subtotal (capped at ₹300).
+- `FIRSTSHOW`: Flat ₹100 discount on booking.
+- `WEEKEND20`: 20% discount on ticket subtotal.

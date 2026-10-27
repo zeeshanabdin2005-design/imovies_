@@ -44,11 +44,13 @@ export const BookingsPage: React.FC = () => {
     const guestEmail = localStorage.getItem('imovies_demo_guest_email') || user?.email || undefined;
 
     try {
+      const idToken = user ? await user.getIdToken().catch(() => undefined) : undefined;
+
       // 1. Fetch from server with scoped userId and/or email
       const serverBookings = await fetchUserBookings({
         userId: effectiveUserId,
         email: guestEmail
-      }).catch(() => []);
+      }, idToken).catch(() => []);
 
       // 2. Fetch local storage cached bookings
       let localBookings: Booking[] = [];
@@ -85,7 +87,8 @@ export const BookingsPage: React.FC = () => {
     setCancelError(null);
 
     try {
-      const res = await cancelBooking(cancellingBooking.id);
+      const idToken = user ? await user.getIdToken().catch(() => undefined) : undefined;
+      const res = await cancelBooking(cancellingBooking.id, idToken);
       if (!res.success) {
         setCancelError(res.message || 'Failed to cancel reservation.');
         setCancelLoading(false);

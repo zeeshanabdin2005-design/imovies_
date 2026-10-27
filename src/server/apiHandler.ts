@@ -10,8 +10,15 @@ import {
   processCheckout,
   getBookingById,
   getBookingsByUser,
-  cancelBooking
+  cancelBooking,
+  getAllBookings,
+  getAdminOverview,
+  getAdminUsersList,
+  createAdminShow,
+  deleteAdminShow,
+  createAdminCinema
 } from './cinemaService';
+import { authenticateRequest } from './authMiddleware';
 
 // Helper to parse JSON request bodies
 async function parseJsonBody<T = any>(req: IncomingMessage): Promise<T | null> {
@@ -45,8 +52,12 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
   const pathname = urlObj.pathname;
   const method = req.method || 'GET';
 
-  // Set standard CORS and JSON headers
+  // Set standard Security and JSON headers
   res.setHeader('Content-Type', 'application/json');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
   const allowedOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:3000';
   const requestOrigin = req.headers.origin;
   if (requestOrigin && (requestOrigin === allowedOrigin || requestOrigin === 'http://localhost:5173')) {
@@ -54,7 +65,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Key');
 
   if (method === 'OPTIONS') {
     res.statusCode = 204;
@@ -219,7 +230,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
   }
 
   // 7. Showtimes search / filter endpoint (GET /api/shows)
-  // Query parameters: movieId, cinemaId, date
   if (pathname === '/api/shows' && method === 'GET') {
     const movieId = urlObj.searchParams.get('movieId') || undefined;
     const cinemaId = urlObj.searchParams.get('cinemaId') || undefined;
@@ -290,7 +300,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
       return true;
     }
 
-    // Guest details validation
     const name = (body.userName || '').trim();
     const email = (body.userEmail || '').trim();
     const phone = (body.userPhone || '').trim();
@@ -314,7 +323,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
       return true;
     }
 
-    // Phone validation: allow 10-digit standard Indian format or valid international length
     const phoneDigits = phone.replace(/\D/g, '');
     if (phoneDigits.length < 10 || phoneDigits.length > 15) {
       res.statusCode = 400;
@@ -325,14 +333,19 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
       return true;
     }
 
+    // Attach authenticated user identity if token present
+    const authContext = await authenticateRequest(req);
+    const effectiveUserId = authContext?.uid || body.userId;
+    const effectiveEmail = authContext?.email || email;
+
     const simulateOutcome = body.simulateOutcome === 'failure' ? 'failure' : 'success';
 
     const result = await processCheckout({
       showId: body.showId,
       seats: body.seats,
-      userId: body.userId,
+      userId: effectiveUserId,
       userName: name,
-      userEmail: email,
+      userEmail: effectiveEmail,
       userPhone: phone,
       couponCode: body.couponCode,
       simulateOutcome,
@@ -347,7 +360,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         return true;
       }
       if ('paymentFailed' in result && result.paymentFailed) {
-        // HTTP 402 Payment Required for simulated failure, returning full failure detail
         res.statusCode = 402;
         res.end(JSON.stringify(result));
         return true;
@@ -362,7 +374,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     return true;
   }
 
-  // 11. Atomic Reservation Endpoint (POST /api/bookings/reserve) - Backward compatibility
+  // 11. Atomic Reservation Endpoint (POST /api/bookings/reserve)
   if (pathname === '/api/bookings/reserve' && method === 'POST') {
     const body = await parseJsonBody<{
       showId: string;
@@ -383,7 +395,13 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
       return true;
     }
 
-    const result = await reserveSeatsAtomic(body);
+    const authContext = await authenticateRequest(req);
+    const effectiveUserId = authContext?.uid || body.userId;
+
+    const result = await reserveSeatsAtomic({
+      ...body,
+      userId: effectiveUserId
+    });
 
     if (!result.success) {
       if (result.conflict) {
@@ -403,7 +421,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
   // 12. Booking details (GET /api/bookings/:bookingId)
   const bookingDetailMatch = pathname.match(/^\/api\/bookings\/([^/]+)$/);
-  if (bookingDetailMatch && method === 'GET') {
+  if (bookingDetailMatch && method === 'GET' && pathname !== '/api/bookings/checkout' && pathname !== '/api/bookings/calculate-price') {
     const bookingId = decodeURIComponent(bookingDetailMatch[1]).trim();
     const booking = getBookingById(bookingId);
     if (!booking) {
@@ -411,6 +429,15 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
       res.end(JSON.stringify({ error: `Booking with ID or Reference "${bookingId}" not found.` }));
       return true;
     }
+
+    // Security check: If authenticated, only owner or admin can view booking details
+    const authContext = await authenticateRequest(req);
+    if (authContext && !authContext.isAdmin && authContext.uid !== booking.userId && authContext.email !== booking.userEmail?.toLowerCase()) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'You are not authorized to view this booking.' }));
+      return true;
+    }
+
     res.statusCode = 200;
     res.end(JSON.stringify(booking));
     return true;
@@ -418,23 +445,47 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
   // 13. User bookings list (GET /api/bookings?userId=...&email=...)
   if (pathname === '/api/bookings' && method === 'GET') {
-    const userId = urlObj.searchParams.get('userId') || '';
-    const email = urlObj.searchParams.get('email') || '';
+    const authContext = await authenticateRequest(req);
+    let userId = urlObj.searchParams.get('userId') || '';
+    let email = urlObj.searchParams.get('email') || '';
+
+    // If signed in, bind to verified auth identity unless admin
+    if (authContext && !authContext.isAdmin) {
+      userId = authContext.uid;
+      email = authContext.email || email;
+    }
+
     if (!userId && !email) {
       res.statusCode = 400;
       res.end(JSON.stringify({ error: 'Query parameter "userId" or "email" is required to list bookings.' }));
       return true;
     }
+
     const bookings = getBookingsByUser(userId, email);
     res.statusCode = 200;
     res.end(JSON.stringify(bookings));
     return true;
   }
 
-  // 13. Cancel booking endpoint (POST /api/bookings/:bookingId/cancel)
+  // 14. Cancel booking endpoint (POST /api/bookings/:bookingId/cancel)
   const bookingCancelMatch = pathname.match(/^\/api\/bookings\/([^/]+)\/cancel$/);
   if (bookingCancelMatch && method === 'POST') {
     const bookingId = decodeURIComponent(bookingCancelMatch[1]).trim();
+    const booking = getBookingById(bookingId);
+    if (!booking) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ success: false, message: 'Booking record not found.' }));
+      return true;
+    }
+
+    // Authorization check: only booking owner or admin can cancel
+    const authContext = await authenticateRequest(req);
+    if (authContext && !authContext.isAdmin && authContext.uid !== booking.userId && authContext.email !== booking.userEmail?.toLowerCase()) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ success: false, message: 'Unauthorized: You can only cancel your own reservations.' }));
+      return true;
+    }
+
     const result = cancelBooking(bookingId);
     if (!result.success) {
       res.statusCode = 400;
@@ -446,6 +497,133 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     return true;
   }
 
+  // ==========================================
+  // 15. BACKEND-AUTHORIZED ADMINISTRATOR ROUTES
+  // ==========================================
+
+  // Admin Overview (GET /api/admin/overview)
+  if (pathname === '/api/admin/overview' && method === 'GET') {
+    const authContext = await authenticateRequest(req);
+    if (!authContext?.isAdmin) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'Administrator authorization required.' }));
+      return true;
+    }
+
+    const overview = getAdminOverview();
+    res.statusCode = 200;
+    res.end(JSON.stringify(overview));
+    return true;
+  }
+
+  // Admin Bookings List (GET /api/admin/bookings)
+  if (pathname === '/api/admin/bookings' && method === 'GET') {
+    const authContext = await authenticateRequest(req);
+    if (!authContext?.isAdmin) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'Administrator authorization required.' }));
+      return true;
+    }
+
+    const allBookings = getAllBookings();
+    res.statusCode = 200;
+    res.end(JSON.stringify(allBookings));
+    return true;
+  }
+
+  // Admin Users List (GET /api/admin/users)
+  if (pathname === '/api/admin/users' && method === 'GET') {
+    const authContext = await authenticateRequest(req);
+    if (!authContext?.isAdmin) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'Administrator authorization required.' }));
+      return true;
+    }
+
+    const users = getAdminUsersList();
+    res.statusCode = 200;
+    res.end(JSON.stringify(users));
+    return true;
+  }
+
+  // Admin Create Showtime (POST /api/admin/shows)
+  if (pathname === '/api/admin/shows' && method === 'POST') {
+    const authContext = await authenticateRequest(req);
+    if (!authContext?.isAdmin) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'Administrator authorization required.' }));
+      return true;
+    }
+
+    const body = await parseJsonBody(req);
+    if (!body) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: 'Invalid JSON request payload.' }));
+      return true;
+    }
+
+    const result = createAdminShow(body);
+    if (!result.success) {
+      res.statusCode = 400;
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    res.statusCode = 201;
+    res.end(JSON.stringify(result));
+    return true;
+  }
+
+  // Admin Delete Showtime (DELETE /api/admin/shows/:showId)
+  const deleteShowMatch = pathname.match(/^\/api\/admin\/shows\/([^/]+)$/);
+  if (deleteShowMatch && method === 'DELETE') {
+    const authContext = await authenticateRequest(req);
+    if (!authContext?.isAdmin) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'Administrator authorization required.' }));
+      return true;
+    }
+
+    const showId = decodeURIComponent(deleteShowMatch[1]).trim();
+    const result = deleteAdminShow(showId);
+    if (!result.success) {
+      res.statusCode = 400;
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    res.statusCode = 200;
+    res.end(JSON.stringify(result));
+    return true;
+  }
+
+  // Admin Create Cinema (POST /api/admin/cinemas)
+  if (pathname === '/api/admin/cinemas' && method === 'POST') {
+    const authContext = await authenticateRequest(req);
+    if (!authContext?.isAdmin) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: 'Administrator authorization required.' }));
+      return true;
+    }
+
+    const body = await parseJsonBody(req);
+    if (!body) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: 'Invalid JSON request payload.' }));
+      return true;
+    }
+
+    const result = createAdminCinema(body);
+    if (!result.success) {
+      res.statusCode = 400;
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    res.statusCode = 201;
+    res.end(JSON.stringify(result));
+    return true;
+  }
+
   return false;
 }
-

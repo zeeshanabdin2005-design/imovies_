@@ -207,6 +207,8 @@ export const CheckoutPage: React.FC = () => {
     };
 
     try {
+      const idToken = user ? await user.getIdToken().catch(() => undefined) : undefined;
+
       const res = await checkoutBooking({
         showId: show.id,
         seats: selectedSeats,
@@ -217,7 +219,8 @@ export const CheckoutPage: React.FC = () => {
         couponCode: appliedCoupon || undefined,
         simulateOutcome: outcome,
         paymentMethodName: methodLabels[selectedPaymentMethod],
-        idempotencyKey
+        idempotencyKey,
+        idToken
       });
 
       if (!res.success) {
@@ -246,11 +249,20 @@ export const CheckoutPage: React.FC = () => {
         // Cache to local bookings
         try {
           const localList: Booking[] = JSON.parse(localStorage.getItem('imovies_user_bookings') || '[]');
-          // Remove duplicates if same ID
           const filtered = localList.filter((b) => b.id !== res.booking!.id);
           filtered.unshift(res.booking);
           localStorage.setItem('imovies_user_bookings', JSON.stringify(filtered));
         } catch {}
+
+        // Best effort sync to Firestore if user is authenticated
+        if (user) {
+          import('../services/firebase').then(({ db }) => {
+            import('firebase/firestore').then(({ doc, setDoc }) => {
+              setDoc(doc(db, 'bookings', res.booking!.id), res.booking)
+                .catch((err) => console.warn('Firestore booking sync notice:', err));
+            });
+          }).catch(() => {});
+        }
 
         // Navigate immediately to ticket confirmation page
         navigate(`/booking/${res.booking.id}`, {

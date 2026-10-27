@@ -1,17 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import {
-  collection,
-  getDocs,
-  setDoc,
-  deleteDoc,
-  doc,
-  query,
-  orderBy
-} from 'firebase/firestore';
-import { db, cancelBookingAtomic } from '../services/firebase';
 import type { Cinema, Show, Booking } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { CURATED_MOVIES } from '../data/curatedMovies';
+import {
+  fetchAdminOverview,
+  fetchAdminBookings,
+  fetchAdminUsers,
+  createAdminShowApi,
+  deleteAdminShowApi,
+  cancelBooking
+} from '../services/movieApi';
 import {
   ShieldCheck,
   Film,
@@ -26,16 +24,29 @@ import {
   Users,
   AlertCircle,
   CheckCircle2,
-  Tv
+  Tv,
+  RefreshCw
 } from 'lucide-react';
+
+interface AdminUserStat {
+  userId: string;
+  userName: string;
+  userEmail: string;
+  userPhone: string;
+  totalBookings: number;
+  totalSpend: number;
+  lastBookingAt: string;
+}
 
 export const AdminDashboardPage: React.FC = () => {
   const { user, isAdmin } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'shows' | 'cinemas' | 'bookings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'shows' | 'cinemas' | 'bookings' | 'users'>('overview');
   const [cinemas, setCinemas] = useState<Cinema[]>([]);
   const [shows, setShows] = useState<Show[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [usersList, setUsersList] = useState<AdminUserStat[]>([]);
+  const [overview, setOverview] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   // New Show Form State
@@ -51,24 +62,37 @@ export const AdminDashboardPage: React.FC = () => {
   const [creatingShow, setCreatingShow] = useState(false);
   const [formMsg, setFormMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
+  // Inline confirmation state for delete/cancel
+  const [confirmAction, setConfirmAction] = useState<{
+    type: 'delete_show' | 'cancel_booking';
+    id: string;
+    label: string;
+  } | null>(null);
+  const [actionProcessing, setActionProcessing] = useState(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+
   const loadAllData = async () => {
     setLoading(true);
+    setActionNotice(null);
     try {
-      const [cinemasSnap, showsSnap, bookingsSnap] = await Promise.all([
-        getDocs(collection(db, 'cinemas')),
-        getDocs(collection(db, 'shows')),
-        getDocs(collection(db, 'bookings'))
+      const idToken = user ? await user.getIdToken().catch(() => undefined) : undefined;
+
+      const [overviewData, bookingsData, showsRes, cinemasRes, usersData] = await Promise.all([
+        fetchAdminOverview(idToken).catch(() => null),
+        fetchAdminBookings(idToken).catch(() => []),
+        fetch('/api/shows').then((r) => r.json()).catch(() => []),
+        fetch('/api/cinemas').then((r) => r.json()).catch(() => []),
+        fetchAdminUsers(idToken).catch(() => [])
       ]);
 
-      const cList = cinemasSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Cinema));
-      const sList = showsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Show));
-      const bList = bookingsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Booking));
+      setOverview(overviewData);
+      setBookings(bookingsData);
+      setShows(showsRes);
+      setCinemas(cinemasRes);
+      setUsersList(usersData);
 
-      setCinemas(cList);
-      setShows(sList);
-      setBookings(bList);
-      if (cList.length > 0 && !newCinemaId) {
-        setNewCinemaId(cList[0].id);
+      if (cinemasRes.length > 0 && !newCinemaId) {
+        setNewCinemaId(cinemasRes[0].id);
       }
     } catch (err) {
       console.warn('Admin data load warning:', err);
@@ -78,8 +102,10 @@ export const AdminDashboardPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadAllData();
-  }, []);
+    if (isAdmin) {
+      loadAllData();
+    }
+  }, [isAdmin, user]);
 
   // Handle Add Show
   const handleCreateShow = async (e: React.FormEvent) => {
@@ -91,35 +117,31 @@ export const AdminDashboardPage: React.FC = () => {
       const selectedMovie = CURATED_MOVIES.find((m) => m.imdbID === newMovieId) || CURATED_MOVIES[0];
       const selectedCinema = cinemas.find((c) => c.id === newCinemaId) || cinemas[0];
 
-      const showId = `show-${selectedCinema.id.replace('cinema-', '')}-${selectedMovie.imdbID}-${newDate}-${newTime.replace(':', '')}`;
-      const showRef = doc(db, 'shows', showId);
+      const idToken = user ? await user.getIdToken() : undefined;
 
-      const newShowData: Show = {
-        id: showId,
-        movieImdbId: selectedMovie.imdbID,
-        movieTitle: selectedMovie.title || selectedMovie.Title || 'Untitled Movie',
-        moviePoster: selectedMovie.poster || selectedMovie.Poster || '',
-        cinemaId: selectedCinema.id,
-        cinemaName: selectedCinema.name,
-        screenId: 'screen-custom',
-        screenName: newScreenName,
-        date: newDate,
-        time: newTime,
-        format: newFormat,
-        language: 'English',
-        pricing: {
-          regular: Number(newRegPrice),
-          premium: Number(newPremPrice),
-          recliner: Number(newReclPrice)
+      await createAdminShowApi(
+        {
+          movieImdbId: selectedMovie.imdbID,
+          movieTitle: selectedMovie.title || selectedMovie.Title || 'Untitled Movie',
+          moviePoster: selectedMovie.poster || selectedMovie.Poster || '',
+          cinemaId: selectedCinema.id,
+          cinemaName: selectedCinema.name,
+          screenId: 'screen-custom',
+          screenName: newScreenName,
+          date: newDate,
+          time: newTime,
+          format: newFormat,
+          language: 'English',
+          pricing: {
+            regular: Number(newRegPrice),
+            premium: Number(newPremPrice),
+            recliner: Number(newReclPrice)
+          }
         },
-        bookedSeats: [],
-        totalSeats: 120,
-        availableSeatsCount: 120,
-        createdAt: new Date().toISOString()
-      };
+        idToken
+      );
 
-      await setDoc(showRef, newShowData);
-      setFormMsg({ text: `Successfully added showtime for "${selectedMovie.Title}"!`, type: 'success' });
+      setFormMsg({ text: `Successfully published showtime for "${selectedMovie.Title}"!`, type: 'success' });
       await loadAllData();
     } catch (err: any) {
       console.error(err);
@@ -129,27 +151,32 @@ export const AdminDashboardPage: React.FC = () => {
     }
   };
 
-  // Handle Delete Show
-  const handleDeleteShow = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this showtime?')) return;
-    try {
-      await deleteDoc(doc(db, 'shows', id));
-      setShows((prev) => prev.filter((s) => s.id !== id));
-    } catch (err: any) {
-      alert('Error deleting show: ' + err.message);
-    }
-  };
+  // Perform confirmed action (delete show or cancel booking)
+  const executeConfirmAction = async () => {
+    if (!confirmAction) return;
+    setActionProcessing(true);
+    setActionNotice(null);
 
-  // Handle Cancel Booking
-  const handleCancelBooking = async (id: string) => {
-    if (!window.confirm('Cancel this customer booking? This will restore seats to the show.')) return;
     try {
-      await cancelBookingAtomic(id, user?.uid || 'admin', true);
-      setBookings((prev) =>
-        prev.map((b) => (b.id === id ? { ...b, status: 'cancelled' } : b))
-      );
+      const idToken = user ? await user.getIdToken() : undefined;
+
+      if (confirmAction.type === 'delete_show') {
+        await deleteAdminShowApi(confirmAction.id, idToken);
+        setShows((prev) => prev.filter((s) => s.id !== confirmAction.id));
+        setActionNotice(`Showtime ${confirmAction.id} deleted successfully.`);
+      } else if (confirmAction.type === 'cancel_booking') {
+        const res = await cancelBooking(confirmAction.id, idToken);
+        if (!res.success) throw new Error(res.message);
+        setBookings((prev) =>
+          prev.map((b) => (b.id === confirmAction.id ? { ...b, status: 'cancelled' } : b))
+        );
+        setActionNotice(`Booking ${confirmAction.id} cancelled. Reserved seats have been released.`);
+      }
+      setConfirmAction(null);
     } catch (err: any) {
-      alert('Error cancelling booking: ' + err.message);
+      setActionNotice(`Action failed: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setActionProcessing(false);
     }
   };
 
@@ -161,19 +188,18 @@ export const AdminDashboardPage: React.FC = () => {
         </div>
         <h2 className="text-2xl font-black">Administrator Access Restricted</h2>
         <p className="text-xs text-[#A7A9B4] max-w-md leading-relaxed">
-          The Admin Dashboard is protected by Cloud Firestore security rules. Authorized admin: <span className="text-white font-mono">zeeshanabdin2005@gmail.com</span>.
+          The Admin Console requires authorized credentials verified on the server.
+          Authorized bootstrap emails: <span className="text-white font-mono">zeeshanabdin2005@gmail.com</span>, <span className="text-white font-mono">riz190175@gmail.com</span>.
         </p>
-        <p className="text-xs text-[#A7A9B4]">Administrator privileges are granted only by trusted account configuration. A frontend demo toggle is intentionally unavailable.</p>
       </div>
     );
   }
 
-  // Aggregate stats
-  const totalRevenue = bookings
+  const totalRevenue = overview?.totalRevenue ?? bookings
     .filter((b) => b.status === 'confirmed')
     .reduce((sum, b) => sum + (b.totalAmount || 0), 0);
 
-  const confirmedBookingsCount = bookings.filter((b) => b.status === 'confirmed').length;
+  const confirmedBookingsCount = overview?.confirmedBookings ?? bookings.filter((b) => b.status === 'confirmed').length;
 
   return (
     <div className="min-h-screen bg-[#08090D] text-white py-10">
@@ -195,20 +221,57 @@ export const AdminDashboardPage: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={loadAllData}
-              className="px-4 py-2 rounded-xl bg-[#171A23] hover:bg-[#1E222E] border border-[#292D38] text-xs font-bold text-white transition-colors"
+              disabled={loading}
+              className="px-4 py-2 rounded-xl bg-[#171A23] hover:bg-[#1E222E] border border-[#292D38] text-xs font-bold text-white transition-colors flex items-center gap-1.5"
             >
-              Refresh Data
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Refresh Data</span>
             </button>
           </div>
         </div>
 
+        {/* Action Notice */}
+        {actionNotice && (
+          <div className="p-3 bg-[#171A23] border border-amber-500/30 text-amber-300 rounded-xl text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{actionNotice}</span>
+          </div>
+        )}
+
+        {/* Confirmation Modal */}
+        {confirmAction && (
+          <div className="p-4 bg-red-500/10 border border-red-500/40 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs space-y-0.5">
+              <p className="font-bold text-white">Confirmation Required</p>
+              <p className="text-red-300">{confirmAction.label}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={actionProcessing}
+                onClick={executeConfirmAction}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold disabled:opacity-50"
+              >
+                {actionProcessing ? 'Processing…' : 'Yes, Confirm'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmAction(null)}
+                className="px-4 py-2 rounded-xl bg-[#292D38] text-[#A7A9B4] text-xs font-semibold hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Tab switch */}
-        <div className="flex bg-[#101219] border border-[#292D38] p-1.5 rounded-2xl max-w-lg">
-          {(['overview', 'shows', 'cinemas', 'bookings'] as const).map((tab) => (
+        <div className="flex bg-[#101219] border border-[#292D38] p-1.5 rounded-2xl max-w-xl overflow-x-auto scrollbar-none">
+          {(['overview', 'shows', 'cinemas', 'bookings', 'users'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-2 text-xs font-bold rounded-xl capitalize transition-all ${
+              className={`flex-1 min-w-[80px] py-2 text-xs font-bold rounded-xl capitalize transition-all ${
                 activeTab === tab
                   ? 'bg-[#E5093F] text-white shadow-md'
                   : 'text-[#A7A9B4] hover:text-white'
@@ -222,12 +285,11 @@ export const AdminDashboardPage: React.FC = () => {
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
           <div className="space-y-8">
-            {/* KPI Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-6 rounded-2xl bg-[#101219] border border-[#292D38] space-y-2">
                 <div className="flex items-center justify-between text-amber-400">
                   <span className="text-xs font-bold uppercase tracking-wider text-[#A7A9B4]">
-                    Total Demo Revenue
+                    Total Revenue
                   </span>
                   <DollarSign className="w-5 h-5" />
                 </div>
@@ -293,7 +355,7 @@ export const AdminDashboardPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#292D38]/50">
-                      {bookings.slice(0, 5).map((b) => (
+                      {bookings.slice(0, 8).map((b) => (
                         <tr key={b.id} className="hover:bg-[#171A23]/50">
                           <td className="py-2.5 px-3 font-mono font-bold text-[#E5093F]">
                             {b.bookingReference}
@@ -335,7 +397,6 @@ export const AdminDashboardPage: React.FC = () => {
         {/* SHOWS TAB */}
         {activeTab === 'shows' && (
           <div className="space-y-8">
-            {/* Create Show Form */}
             <div className="p-6 sm:p-8 rounded-3xl bg-[#101219] border border-[#292D38] space-y-5">
               <h3 className="text-xl font-bold text-white flex items-center gap-2">
                 <Plus className="w-5 h-5 text-[#E5093F]" />
@@ -351,9 +412,9 @@ export const AdminDashboardPage: React.FC = () => {
                   }`}
                 >
                   {formMsg.type === 'success' ? (
-                    <CheckCircle2 className="w-4 h-4" />
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
                   ) : (
-                    <AlertCircle className="w-4 h-4" />
+                    <AlertCircle className="w-4 h-4 shrink-0" />
                   )}
                   <span>{formMsg.text}</span>
                 </div>
@@ -469,7 +530,7 @@ export const AdminDashboardPage: React.FC = () => {
                 <button
                   type="submit"
                   disabled={creatingShow}
-                  className="px-6 py-3 rounded-xl bg-[#E5093F] hover:bg-[#FF3D61] text-white text-xs font-bold shadow-lg shadow-[#E5093F]/25 flex items-center gap-2"
+                  className="px-6 py-3 rounded-xl bg-[#E5093F] hover:bg-[#FF3D61] text-white text-xs font-bold shadow-lg shadow-[#E5093F]/25 flex items-center gap-2 disabled:opacity-50"
                 >
                   <Plus className="w-4 h-4" />
                   <span>{creatingShow ? 'Scheduling...' : 'Save & Publish Showtime'}</span>
@@ -506,8 +567,13 @@ export const AdminDashboardPage: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => handleDeleteShow(show.id)}
+                      onClick={() => setConfirmAction({
+                        type: 'delete_show',
+                        id: show.id,
+                        label: `Delete showtime for "${show.movieTitle}" at ${show.time}?`
+                      })}
                       className="p-2 text-red-400 hover:text-red-300 rounded-lg hover:bg-[#171A23]"
+                      title="Delete showtime"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -597,10 +663,14 @@ export const AdminDashboardPage: React.FC = () => {
                         {b.status === 'confirmed' && (
                           <button
                             type="button"
-                            onClick={() => handleCancelBooking(b.id)}
-                            className="text-red-400 hover:text-red-300 underline"
+                            onClick={() => setConfirmAction({
+                              type: 'cancel_booking',
+                              id: b.id,
+                              label: `Cancel booking ${b.bookingReference} for ${b.userName}? Seats [${b.seats.join(', ')}] will be returned to inventory.`
+                            })}
+                            className="text-red-400 hover:text-red-300 underline font-semibold"
                           >
-                            Cancel
+                            Cancel Booking
                           </button>
                         )}
                       </td>
@@ -609,6 +679,49 @@ export const AdminDashboardPage: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* USERS LIST TAB */}
+        {activeTab === 'users' && (
+          <div className="space-y-6">
+            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+              <Users className="w-5 h-5 text-[#E5093F]" />
+              <span>Registered Customers & Guests ({usersList.length})</span>
+            </h3>
+
+            {usersList.length === 0 ? (
+              <p className="text-xs text-[#A7A9B4]">No customer activity recorded yet.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl bg-[#101219] border border-[#292D38]">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-[#292D38] text-[#A7A9B4]">
+                      <th className="py-3 px-4">Customer Name</th>
+                      <th className="py-3 px-4">Contact Email</th>
+                      <th className="py-3 px-4">Phone Number</th>
+                      <th className="py-3 px-4">Total Bookings</th>
+                      <th className="py-3 px-4">Total Spend</th>
+                      <th className="py-3 px-4">Last Activity</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#292D38]/50">
+                    {usersList.map((u) => (
+                      <tr key={u.userId} className="hover:bg-[#171A23]/50">
+                        <td className="py-3 px-4 font-bold text-white">{u.userName}</td>
+                        <td className="py-3 px-4 text-[#A7A9B4]">{u.userEmail}</td>
+                        <td className="py-3 px-4 text-[#A7A9B4]">{u.userPhone}</td>
+                        <td className="py-3 px-4 font-bold text-emerald-400">{u.totalBookings}</td>
+                        <td className="py-3 px-4 font-bold text-white">₹{u.totalSpend}</td>
+                        <td className="py-3 px-4 text-[11px] text-[#A7A9B4]">
+                          {new Date(u.lastBookingAt).toLocaleDateString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </div>

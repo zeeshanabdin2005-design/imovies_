@@ -7,7 +7,7 @@ service cloud.firestore {
 
     function isVerifiedBootstrapAdmin() {
       return signedIn()
-        && request.auth.token.email == 'zeeshanabdin2005@gmail.com'
+        && (request.auth.token.email == 'zeeshanabdin2005@gmail.com' || request.auth.token.email == 'riz190175@gmail.com')
         && request.auth.token.email_verified == true;
     }
 

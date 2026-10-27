@@ -339,10 +339,14 @@ export async function checkoutBooking(payload: {
   simulateOutcome?: 'success' | 'failure';
   paymentMethodName?: string;
   idempotencyKey?: string;
+  idToken?: string;
 }): Promise<CheckoutBookingResponse> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (payload.idToken) headers['Authorization'] = `Bearer ${payload.idToken}`;
+
   const res = await fetch('/api/bookings/checkout', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload)
   });
 
@@ -379,15 +383,21 @@ export async function checkoutBooking(payload: {
   return data;
 }
 
-export async function fetchBooking(bookingId: string): Promise<Booking> {
-  const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}`);
+export async function fetchBooking(bookingId: string, idToken?: string): Promise<Booking> {
+  const headers: Record<string, string> = {};
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}`, { headers });
   if (!res.ok) {
     throw new Error(`Booking record "${bookingId}" not found.`);
   }
   return await res.json();
 }
 
-export async function fetchUserBookings(query: string | { userId?: string; email?: string }): Promise<Booking[]> {
+export async function fetchUserBookings(
+  query: string | { userId?: string; email?: string },
+  idToken?: string
+): Promise<Booking[]> {
   const params = new URLSearchParams();
   if (typeof query === 'string') {
     params.set('userId', query);
@@ -396,7 +406,10 @@ export async function fetchUserBookings(query: string | { userId?: string; email
     if (query.email) params.set('email', query.email);
   }
 
-  const res = await fetch(`/api/bookings?${params.toString()}`);
+  const headers: Record<string, string> = {};
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch(`/api/bookings?${params.toString()}`, { headers });
   if (!res.ok) {
     throw new Error('Failed to retrieve bookings.');
   }
@@ -404,15 +417,91 @@ export async function fetchUserBookings(query: string | { userId?: string; email
 }
 
 export async function cancelBooking(
-  bookingId: string
+  bookingId: string,
+  idToken?: string
 ): Promise<{ success: boolean; message: string; releasedSeats?: string[] }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
   const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/cancel`, {
-    method: 'POST'
+    method: 'POST',
+    headers
   });
   const data = await res.json().catch(() => ({
     success: false,
     message: 'Failed to cancel booking.'
   }));
+  return data;
+}
+
+// ==========================================
+// ADMIN API CLIENT CALLS
+// ==========================================
+
+export async function fetchAdminOverview(idToken?: string) {
+  const headers: Record<string, string> = {};
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch('/api/admin/overview', { headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to retrieve admin overview statistics.');
+  }
+  return await res.json();
+}
+
+export async function fetchAdminBookings(idToken?: string): Promise<Booking[]> {
+  const headers: Record<string, string> = {};
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch('/api/admin/bookings', { headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to retrieve all bookings.');
+  }
+  return await res.json();
+}
+
+export async function fetchAdminUsers(idToken?: string) {
+  const headers: Record<string, string> = {};
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch('/api/admin/users', { headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to retrieve user accounts.');
+  }
+  return await res.json();
+}
+
+export async function createAdminShowApi(showData: Partial<Show>, idToken?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch('/api/admin/shows', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(showData)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to schedule new showtime.');
+  }
+  return data;
+}
+
+export async function deleteAdminShowApi(showId: string, idToken?: string) {
+  const headers: Record<string, string> = {};
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+  const res = await fetch(`/api/admin/shows/${encodeURIComponent(showId)}`, {
+    method: 'DELETE',
+    headers
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to delete showtime.');
+  }
   return data;
 }
 

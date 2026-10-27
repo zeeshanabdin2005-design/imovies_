@@ -30,7 +30,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const ADMIN_EMAIL = 'zeeshanabdin2005@gmail.com';
+const ADMIN_EMAILS = ['zeeshanabdin2005@gmail.com', 'riz190175@gmail.com'];
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -49,8 +49,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         if (firebaseUser) {
           const token = await firebaseUser.getIdTokenResult(true);
+          const userEmail = (firebaseUser.email || '').toLowerCase();
           const emailAdmin = Boolean(
-            firebaseUser.email?.toLowerCase() === ADMIN_EMAIL &&
+            ADMIN_EMAILS.includes(userEmail) &&
             firebaseUser.emailVerified &&
             token.claims.email_verified === true
           );
@@ -94,8 +95,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (error) {
         console.warn('Authentication profile initialization failed:', error);
         if (firebaseUser) {
+          const userEmail = (firebaseUser.email || '').toLowerCase();
           const isAllowlistedVerifiedAdmin =
-            firebaseUser.email?.toLowerCase() === ADMIN_EMAIL && firebaseUser.emailVerified;
+            ADMIN_EMAILS.includes(userEmail) && firebaseUser.emailVerified;
           setTrustedAdmin(Boolean(isAllowlistedVerifiedAdmin));
           setUserProfile({
             id: firebaseUser.uid,
@@ -129,7 +131,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signupWithEmail = async (email: string, pass: string, name: string) => {
     if (pass.length < 8) throw new Error('Use a password with at least 8 characters.');
     const normalizedEmail = email.trim().toLowerCase();
-    if (normalizedEmail === ADMIN_EMAIL) {
+    if (ADMIN_EMAILS.includes(normalizedEmail)) {
       throw new Error('This administrator account cannot be created through public registration. Use the authorized existing account.');
     }
     const cred = await createUserWithEmailAndPassword(auth, normalizedEmail, pass);

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Cinema, Show, Booking, SeatCategory } from '../types';
 import { CURATED_MOVIES } from './omdbService';
 
@@ -123,7 +125,6 @@ function buildInitialShows(): Map<string, Show> {
   BHOPAL_CINEMAS.forEach((cinema) => {
     CURATED_MOVIES.forEach((movie, mIdx) => {
       dates.forEach((dateStr, dIdx) => {
-        // Pick 2 showtimes per movie per day per cinema
         const slot1 = timeSlots[(mIdx + dIdx) % timeSlots.length];
         const slot2 = timeSlots[(mIdx + dIdx + 2) % timeSlots.length];
 
@@ -169,24 +170,104 @@ function buildInitialShows(): Map<string, Show> {
   return showsMap;
 }
 
-// In-Memory Show Store & Booking Store (with concurrency locking)
-const showsStore: Map<string, Show> = buildInitialShows();
-const bookingsStore: Map<string, Booking> = new Map<string, Booking>();
-const idempotencyStore: Map<string, Booking> = new Map<string, Booking>();
+// ==========================================
+// DURABLE PERSISTENCE LAYER (database.json)
+// ==========================================
+const DB_DIR = path.resolve(process.cwd(), 'data');
+const DB_FILE = path.join(DB_DIR, 'database.json');
 
-// Concurrency mutex lock per show ID
+interface DatabaseSchema {
+  cinemas: Cinema[];
+  shows: Record<string, Show>;
+  bookings: Record<string, Booking>;
+  idempotency: Record<string, Booking>;
+}
+
+// In-Memory stores
+let cinemasStore: Cinema[] = [...BHOPAL_CINEMAS];
+let showsStore: Map<string, Show> = new Map<string, Show>();
+let bookingsStore: Map<string, Booking> = new Map<string, Booking>();
+let idempotencyStore: Map<string, Booking> = new Map<string, Booking>();
 const showLocks = new Set<string>();
 
+/**
+ * Persist current state to durable database file atomically
+ */
+function flushToDisk(): void {
+  try {
+    if (!fs.existsSync(DB_DIR)) {
+      fs.mkdirSync(DB_DIR, { recursive: true });
+    }
+
+    const data: DatabaseSchema = {
+      cinemas: cinemasStore,
+      shows: Object.fromEntries(showsStore),
+      bookings: Object.fromEntries(bookingsStore),
+      idempotency: Object.fromEntries(idempotencyStore)
+    };
+
+    const tempPath = `${DB_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(tempPath, DB_FILE);
+  } catch (err) {
+    console.warn('[cinemaService] Failed to flush database to disk:', err);
+  }
+}
+
+/**
+ * Initialize stores from disk or create baseline
+ */
+function initDatabase(): void {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const raw = fs.readFileSync(DB_FILE, 'utf8');
+      const parsed: DatabaseSchema = JSON.parse(raw);
+
+      if (Array.isArray(parsed.cinemas) && parsed.cinemas.length > 0) {
+        cinemasStore = parsed.cinemas;
+      } else {
+        cinemasStore = [...BHOPAL_CINEMAS];
+      }
+
+      if (parsed.shows && typeof parsed.shows === 'object') {
+        showsStore = new Map(Object.entries(parsed.shows));
+      } else {
+        showsStore = buildInitialShows();
+      }
+
+      if (parsed.bookings && typeof parsed.bookings === 'object') {
+        bookingsStore = new Map(Object.entries(parsed.bookings));
+      }
+
+      if (parsed.idempotency && typeof parsed.idempotency === 'object') {
+        idempotencyStore = new Map(Object.entries(parsed.idempotency));
+      }
+      return;
+    }
+  } catch (err) {
+    console.warn('[cinemaService] Error reading database.json, rebuilding initial data:', err);
+  }
+
+  // Fallback initial load
+  cinemasStore = [...BHOPAL_CINEMAS];
+  showsStore = buildInitialShows();
+  bookingsStore = new Map();
+  idempotencyStore = new Map();
+  flushToDisk();
+}
+
+// Run database initialization on module load
+initDatabase();
 
 /**
  * Get all Bhopal cinemas
  */
 export function getCinemas(): Cinema[] {
-  return BHOPAL_CINEMAS;
+  return cinemasStore;
 }
 
 export function getCinemaById(cinemaId: string): Cinema | null {
-  return BHOPAL_CINEMAS.find((c) => c.id === cinemaId) || null;
+  return cinemasStore.find((c) => c.id === cinemaId) || null;
 }
 
 /**
@@ -328,8 +409,6 @@ export function calculatePricing(
 }
 
 /**
- * Atomic Concurrency-Safe Seat Reservation
-/**
  * Process Checkout: Handles guest details validation, server-authoritative pricing,
  * coupon calculation, idempotency protection, and simulated payment outcomes (success / failure).
  */
@@ -429,11 +508,9 @@ export async function processCheckout(params: {
       createdAt: new Date().toISOString()
     };
 
-    // Store in bookingsStore for transaction history / user retry
     bookingsStore.set(failedBookingId, failedBooking);
+    flushToDisk();
 
-    // CRITICAL: Notice that seats are NOT added to show.bookedSeats.
-    // They remain completely free for other guests or an immediate retry!
     return {
       success: false,
       paymentFailed: true,
@@ -509,6 +586,9 @@ export async function processCheckout(params: {
       idempotencyStore.set(idempotencyKey, booking);
     }
 
+    // Flush updated show & booking to durable database
+    flushToDisk();
+
     return { success: true, booking };
   } finally {
     showLocks.delete(showId);
@@ -564,7 +644,6 @@ export function getBookingById(bookingId: string): Booking | null {
   if (bookingsStore.has(bookingId)) {
     return bookingsStore.get(bookingId)!;
   }
-  // Try finding by bookingReference
   for (const b of bookingsStore.values()) {
     if (b.bookingReference === bookingId) {
       return b;
@@ -622,6 +701,9 @@ export function cancelBooking(
   booking.status = 'cancelled';
   booking.cancelledAt = new Date().toISOString();
 
+  // Persist cancellation to database
+  flushToDisk();
+
   return {
     success: true,
     message: `Reservation ${booking.bookingReference} cancelled. Seats [${booking.seats.join(', ')}] have been released.`,
@@ -629,3 +711,181 @@ export function cancelBooking(
   };
 }
 
+// ==========================================
+// ADMIN DASHBOARD & MANAGEMENT OPERATIONS
+// ==========================================
+
+export function getAllBookings(): Booking[] {
+  return Array.from(bookingsStore.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
+
+export function getAdminOverview() {
+  const allBookings = Array.from(bookingsStore.values());
+  const confirmed = allBookings.filter((b) => b.status === 'confirmed');
+  const cancelled = allBookings.filter((b) => b.status === 'cancelled');
+  const paymentFailed = allBookings.filter((b) => b.status === 'payment_failed');
+
+  const totalRevenue = confirmed.reduce((acc, b) => acc + (b.totalAmount || 0), 0);
+  const totalSeatsSold = confirmed.reduce((acc, b) => acc + (b.seats?.length || 0), 0);
+
+  // Group by cinema
+  const cinemaStats: Record<string, { name: string; bookings: number; revenue: number }> = {};
+  for (const c of cinemasStore) {
+    cinemaStats[c.id] = { name: c.name, bookings: 0, revenue: 0 };
+  }
+
+  for (const b of confirmed) {
+    if (b.cinemaId && cinemaStats[b.cinemaId]) {
+      cinemaStats[b.cinemaId].bookings += 1;
+      cinemaStats[b.cinemaId].revenue += b.totalAmount || 0;
+    }
+  }
+
+  return {
+    totalBookings: allBookings.length,
+    confirmedBookings: confirmed.length,
+    cancelledBookings: cancelled.length,
+    failedTransactions: paymentFailed.length,
+    totalRevenue,
+    totalSeatsSold,
+    totalShows: showsStore.size,
+    totalCinemas: cinemasStore.length,
+    cinemaStats: Object.values(cinemaStats),
+    recentBookings: allBookings.slice(0, 10)
+  };
+}
+
+export function getAdminUsersList() {
+  const userMap = new Map<string, {
+    userId: string;
+    userName: string;
+    userEmail: string;
+    userPhone: string;
+    totalBookings: number;
+    totalSpend: number;
+    lastBookingAt: string;
+  }>();
+
+  for (const b of bookingsStore.values()) {
+    const key = b.userId || b.userEmail || 'unknown';
+    const existing = userMap.get(key);
+    const amount = b.status === 'confirmed' ? (b.totalAmount || 0) : 0;
+
+    if (!existing) {
+      userMap.set(key, {
+        userId: b.userId,
+        userName: b.userName || 'Guest User',
+        userEmail: b.userEmail || 'N/A',
+        userPhone: b.userPhone || 'N/A',
+        totalBookings: 1,
+        totalSpend: amount,
+        lastBookingAt: b.createdAt
+      });
+    } else {
+      existing.totalBookings += 1;
+      existing.totalSpend += amount;
+      if (new Date(b.createdAt) > new Date(existing.lastBookingAt)) {
+        existing.lastBookingAt = b.createdAt;
+      }
+    }
+  }
+
+  return Array.from(userMap.values()).sort((a, b) => b.totalSpend - a.totalSpend);
+}
+
+export function createAdminShow(showData: Partial<Show>): { success: boolean; show?: Show; error?: string } {
+  if (!showData.movieImdbId || !showData.cinemaId || !showData.date || !showData.time) {
+    return { success: false, error: 'movieImdbId, cinemaId, date, and time are required.' };
+  }
+
+  const cinema = getCinemaById(showData.cinemaId);
+  if (!cinema) {
+    return { success: false, error: `Cinema "${showData.cinemaId}" not found.` };
+  }
+
+  const cleanCinemaId = cinema.id.replace('cinema-', '');
+  const cleanTime = showData.time.replace(':', '');
+  const showId = `show-${cleanCinemaId}-${showData.movieImdbId}-${showData.date}-${cleanTime}`;
+
+  if (showsStore.has(showId)) {
+    return { success: false, error: 'A showtime with this identifier already exists.' };
+  }
+
+  const newShow: Show = {
+    id: showId,
+    movieImdbId: showData.movieImdbId,
+    movieTitle: showData.movieTitle || 'Untitled Movie',
+    moviePoster: showData.moviePoster || '',
+    cinemaId: cinema.id,
+    cinemaName: cinema.name,
+    screenId: showData.screenId || cinema.screens[0]?.id || 'sc-1',
+    screenName: showData.screenName || cinema.screens[0]?.name || 'Screen 1',
+    date: showData.date,
+    time: showData.time,
+    format: showData.format || '2D',
+    language: showData.language || 'English',
+    pricing: {
+      regular: showData.pricing?.regular || PRICING_TIERS.regular,
+      premium: showData.pricing?.premium || PRICING_TIERS.premium,
+      recliner: showData.pricing?.recliner || PRICING_TIERS.recliner
+    },
+    bookedSeats: [],
+    totalSeats: 120,
+    availableSeatsCount: 120,
+    createdAt: new Date().toISOString()
+  };
+
+  showsStore.set(showId, newShow);
+  flushToDisk();
+  return { success: true, show: newShow };
+}
+
+export function deleteAdminShow(showId: string): { success: boolean; error?: string } {
+  if (!showsStore.has(showId)) {
+    return { success: false, error: `Show with ID "${showId}" not found.` };
+  }
+
+  // Check if active bookings exist on this show
+  const hasBookings = Array.from(bookingsStore.values()).some(
+    (b) => b.showId === showId && b.status === 'confirmed'
+  );
+
+  if (hasBookings) {
+    return { success: false, error: 'Cannot delete showtime that already has confirmed customer bookings.' };
+  }
+
+  showsStore.delete(showId);
+  flushToDisk();
+  return { success: true };
+}
+
+export function createAdminCinema(cinemaData: Partial<Cinema>): { success: boolean; cinema?: Cinema; error?: string } {
+  if (!cinemaData.name || !cinemaData.location) {
+    return { success: false, error: 'Cinema name and location are required.' };
+  }
+
+  const id = cinemaData.id || `cinema-${cinemaData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+
+  const newCinema: Cinema = {
+    id,
+    name: cinemaData.name,
+    location: cinemaData.location,
+    city: cinemaData.city || 'Bhopal',
+    state: cinemaData.state || 'Madhya Pradesh',
+    rating: cinemaData.rating || 4.5,
+    totalReviews: cinemaData.totalReviews || 10,
+    screensCount: cinemaData.screensCount || 3,
+    screens: cinemaData.screens || [
+      { id: 'sc-1', name: 'Audi 1 - 4K Laser', soundSystem: 'Dolby Atmos', screenType: '4K Laser', capacity: 120 }
+    ],
+    amenities: cinemaData.amenities || ['Dolby Atmos', 'Plush Seating', 'Parking'],
+    imageUrl: cinemaData.imageUrl || 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?auto=format&fit=crop&w=800&q=80',
+    phone: cinemaData.phone || '+91 755 4000000'
+  };
+
+  cinemasStore.push(newCinema);
+  flushToDisk();
+  return { success: true, cinema: newCinema };
+}
